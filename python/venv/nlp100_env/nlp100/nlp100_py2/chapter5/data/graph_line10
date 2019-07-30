@@ -1,0 +1,18 @@
+digraph {
+	node [shape=circle]
+	0 [label="この"]
+	1 [label="書生というのは"]
+	2 [label="時々"]
+	3 [label="我々を"]
+	4 [label="捕えて"]
+	5 [label="煮て"]
+	6 [label="食うという"]
+	7 [label="話である"]
+	0 -> 1
+	1 -> 7
+	2 -> 4
+	3 -> 4
+	4 -> 5
+	5 -> 6
+	6 -> 7
+}

@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>テンプレートエンジン</title>
+</head>
+<body>
+  <div>
+    <form action='/artist' method='post'>
+      <div>
+        name: <input name='name' type='text'>
+        <input type="radio" name="name_search_condition" value="0" checked>完全一致
+        <input type="radio" name="name_search_condition" value="1">部分一致
+      </div>
+      <div>
+        alias name: <input name='aliases.name' type='text'>
+        <input type="radio" name="alias_search_condition" value="0" checked>完全一致
+        <input type="radio" name="alias_search_condition" value="1">部分一致
+      </div>
+      <div>
+        tag: <input name='tags.value' type='text'>
+      </div>
+      <input value='search', type='submit'>
+    </form>
+  </div>
+% if results:
+  <div>
+    <ul>
+% for result in results:
+% rating_value = result['rating']['value'] if 'rating' in result and 'value' in result['rating'] else '-'
+      <li>{{ result['name'] }}: {{ rating_value }}</li>
+% end
+    </ul>
+  </div>
+% end
+</body>
+</html>

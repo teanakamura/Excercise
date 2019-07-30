@@ -1,0 +1,107 @@
+\documentclass{jarticle}
+\usepackage[top=20truemm,bottom=20truemm,left=25truemm,right=25truemm]{geometry}
+\usepackage{color}
+
+\renewcommand{\thesubsection}{(\arabic{subsection})}
+\renewcommand{\thesubsubsection}{(\arabic{subsection}-\arabic{subsubsection})}
+\renewcommand\thefootnote{*\arabic{footnote}}
+
+\pagestyle{empty}%
+\definecolor{mygray}{gray}{0.8}
+\tabcolsep = 3pt
+
+\begin{document}
+
+% \maketitle
+\begin{center}
+ {\LARGE 実践的並列コンピューティング 課題} % title
+\end{center}
+\begin{flushright}
+ 2019年 5月 9日 \\ % date
+ {\large 19M31252　仲村風哉} % author
+\end{flushright}
+
+\subsection{どの問題を解いたか}
+\noindent
+[O1]diffusion
+
+\subsection{実行した手法と考察}
+以下、各ファイルごとにどういった手法を施したかの詳細を記述し、実行結果の考察を行う。resource typeは全てh\_nodeで実行した。各プログラムの実行結果は表１にまとめた。
+\subsubsection{\texttt{diffusion\_omp\_orig.c}}
+オリジナルコード（\texttt{diffusion.c}）のfor三重ループのyループにopenmpのループ並列化処理を施した。ループ内の処理でtに依存した更新処理を行なっているため、openmpでのtループの並列化は困難である。また、プロセッサは各コアで独立のキャッシュL1,L2と、コア全体で共有のキャッシュL3を持っており、メモリへの三次元配列の格納のされ方を\texttt{array.c}で確認したところxについての連番がメモリ上でも連続になるように格納されていたため、L1,L2キャッシュの使用を考慮すると、yで並列化するのが最も効率的と考え、yループを並列化した。\par
+スレッド数１のものは当然ながらopenmpなしの結果と概ね一致する結果となった。スレッドの増加に従ってスレッド数に比例する形で実行速度が速くなっていることが読み取れる。しかし、スレッド数21や28では速度の伸びが悪くなっており、スレッド数14付近を境に速度の増加が鈍化していくと思われる。\par
+キャッシュミス率を見るとスレッド数14まではほぼ一定だが、スレッド数21,28では大きく低下している。これは、今回h\_nodeを使用しているためコア数14であり、スレッド数14まではコアごとに１つのスレッドを使用するが、15以降は1コアで2スレッド使用するコアが出現し、コアごとのキャッシュであるL1,L2が、スレッド間で共有化されキャッシュミス率が低下したためと考えられる。
+
+
+\subsubsection{\texttt{diffusion\_omp\_var\_tyx.c}}
+問題のOptionalで指定されている、拡散範囲の動的宣言を可能にした。\par
+(2-1)の場合とメモリへの配列内の要素の配置のされ方は同様になり、$8192\times8192$の場合は実行速度、キャッシュミス率共に同等の結果を示した。
+
+\subsubsection{\texttt{diffusion\_omp\_block.c\\diffusion\_omp\_var\_tyx\_block.c}}
+問題のOptionalで指定されている、キャッシュブロック化を行った。キャッシュブロック化は、キャッシュの効率利用のために、同じデータをキャッシュ-メモリ間で複数回通信しないようにキャッシュサイズのデータでループを完結させるようにルーブサイズを制限する手法である。今回、濃度の更新式で前ステップの同位置と、xについての前後の位置、yについての前後の位置の値を計算に利用する。一番内側がxループなので、各スレッドについて少なくともtについての2列とyについての3列が入るサイズのキャッシュでブロックを作成すれば良い。従って、x方向のブロックサイズを\\
+$x\_block\_size = CACHE\_SIZE / (sizeof(float) \times num\_threads \times 3 \times 2 \times 1.5)$\\
+で計算した。係数1.5はキャッシュサイズに余裕を持たせるための補正係数である。キャッシュサイズはlscpuコマンドで確認してL3キャッシュサイズの35840KBを与えた。\par
+$8192\times8192$の場合はキャッシュミス率も実行速度もほとんど改善が見られなかった。これはxが8192だと14スレッドで計算しているので、\\
+$sizeof(float)\times14\times3\times2\times8192=2752512$\\
+となり、2753KBのキャッシュが必要だが、十分なキャッシュサイズがあるため、ブロック化を施さなくても同じデータを複数回重複してメモリから読み込むことがないためだと考えられる。\par
+動的に計算領域を指定できるプログラムにキャッシュブロック化を行い、ブロック化の恩恵を受けられるサイズ（$640000\times140$）で計算し比較した。キャッシュミス率についてはブロック化により大きく低下したが、実行速度については大きな変化は見られなかった。これの原因として、今回、キャッシュブロック化のためにyループの外側にxのループ範囲を定めるbxのループを用意したが、これによりopenmpの並列化処理が1ステップに何度も呼び出されることとなり、そのオーバーヘッドが影響したのではないかと考えている。
+
+\subsubsection{\texttt{diffusion\_omp\_static.c}}
+キャッシュブロック化とは異なるキャッシュの効率的な利用の手法として、openmpの\texttt{schedule(static, chunk\_size)}を利用した。openmpのforループの並列化ではデフォルトで、ループ回数をスレッド数で割った商をchunk sizeとして、chunk size分連続したループカウンターの値に対して各スレッドがループを実行する挙動となる。この時、各スレッドで利用されるyの値はchunk size分離れた値となり、拡散方程式ではyについて前後の値を利用するためにキャッシュミス率が高くなる。\texttt{schedule(static, chunk\_size)}を使用するとchunk sizeを指定することができる。$chunk\_size=1$を使用すると各スレッド間で隣接したyの値で計算するのでラストレベルキャッシュの効率的利用が可能となる。一方でコアごとに独立なL1キャッシュ、L2キャッシュのミス率は高くなると考えられるが、ラストレベルキャッシュのミス率を下げることによる高速化の恩恵の方が高いと考えた。\par
+こちらもキャッシュミス率については改善が見られたが、実行速度に関してはほとんど変わらない結果となった。前述のようにxのサイズ8192ではキャッシュの効率的利用の恩恵があまり受けられないからだと考えられる。
+
+
+\subsubsection{\texttt{diffusion\_omp\_simd.c}}
+問題のOptionalで指定されている、simdによる高速化を取り入れた。simdは single instruction multiple data で、１つの演算命令で複数のデータを同時に計算する手法である。今回計算に使用しているfloat型は4Bで、レジスタのサイズは32Bなのでsimdを使うと１つの演算命令で同時に8つのデータを計算することが可能である。濃度の更新のためにsimdを使った\texttt{simd\_calc()}という関数を用意して組み込んだ。\par
+キャッシュミス率は通常のopenmpのみのプログラムと変わらないものの、実行速度は約4倍と大きく上昇した。１つの演算命令で扱うデータ数は8倍だが、フェッチや計算の複雑さが増加し、パイプライン処理などの仕方も最適化できていないと思われるので4倍に留まったと考えられる。
+
+
+\subsubsection{\texttt{diffusion\_omp\_orig\_yxt.c} \\ \texttt{diffusion\_omp\_var\_yxt.c}}
+配列内の要素の配置の仕方を工夫して高速化できないかということに取り組んだ。
+濃度の更新式では更新後のステップと更新前のステップの双方の2次元配列を用いるため、同位置・別時間のデータをメモリ上の連続したメモリ領域に配置されるようにすることで高速化が望めるのではないかと考えた。ここで、ループの順序に関しては、tループを前ステップの結果に依存するという理由から一番外側に配置し、yループとxループの順序に関してはキャッシュの利用の観点から、メモリ上で連続したインデックスの値が近い位置に配置されている方を内側のループとするのが最も高速である。以上より、今回は常にyループがxループの外側になるようにしたので、tyx型配列（デフォルトの順番）とyxt型配列の２つのみを検討し、比較した。追加でyxt型についてC言語の多次元配列を利用したもの（\texttt{diffusion\_omp\_orig\_yxt.c}）と、一次元配列化したもの（\texttt{diffusion\_omp\_orig\_var\_yxt.c}）の２つを実行した。\par
+いずれの場合もtyx型のものと比べてキャッシュミス率は3$\sim$5\%改善し、速度も20$\sim$50\%程度速くなったため、yxt型のループの方がキャッシュの効率的利用が可能で、有意に速度も向上するとわかった。
+
+\bigskip
+\begin{table}[h]
+    \centering
+    \begin{tabular}[100mm]{c|c|c|c|c|c}
+         手法（ファイル名）
+         & スレッド数
+         & \begin{tabular}{c}
+            計算領域 \\ （$x\_size \times y\_size$）
+            \end{tabular}
+         & \begin{tabular}{c}
+            実行時間\footnotemark[1]{} \\[0pt] [s]
+            \end{tabular}
+         & \begin{tabular}{c}
+            速度\footnotemark[1]{} \\[0pt] [GFlops]
+            \end{tabular}
+         & \begin{tabular}{c}
+            キャッシュ\\ミス率\footnotemark[1]\footnotemark[2][\%]
+            \end{tabular}
+         \\ \hline\hline
+         diffusion.c && $8192\times8192$ & 47.107 & 0.356 & 94.523 \\\hline
+         diffusion\_omp\_orig.c & 1& $8192\times8192$ & 48.073 & 0.349 & 94.549 \\
+         & 2 & $8192\times8192$ & 24.087 & 0.696 & 94.579 \\
+         & 5 & $8192\times8192$ & 9.648 & 1.739 & 94.526 \\
+         & 7 & $8192\times8192$ & 6.898 & 2.432 & 94.728 \\
+         & 14 & $8192\times8192$ & 3.483 & 4.792 & 95.460 \\
+         & 21 & $8192\times8192$ & 2.996 & 5.600 & 65.629 \\
+         & 28 & $8192\times8192$ & 2.309 & 7.266 & 56.171 \\\hline
+         diffusion\_omp\_var\_tyx.c & 14& $8192\times8192$ & 3.385 & 4.957 & 94.989 \\
+         & 14 & $640000\times140$ & 6.812 & 3.289 & 95.259 \\\hline
+         diffusion\_omp\_block.c & 14 & $8192\times8192$ & 3.518 & 4.771 & 93.638 \\\hline
+         diffusion\_omp\_var\_tyx\_block.c & 14 & $8192\times8192$ & 3.404 & 4.928 & 94.048 \\
+         & 14 & $640000\times140$ & 6.976 & 3.368 & 56.023 \\\hline
+         diffusion\_omp\_static.c & 14 & $8192\times8192$ & 3.486 & 4.813 & 81.671 \\\hline
+         diffusion\_omp\_simd.c & 14 & $8192\times8192$ & 0.909 & 18.460 & 93.846 \\\hline
+         diffusion\_omp\_orig\_yxt.c & 14 & $8192\times8192$ & 2.355 & 7.125 & 87.809 \\\hline
+         diffusion\_omp\_var\_yxt.c & 14 & $8192\times8192$ & 2.780 & 6.035 & 91.995 \\\hline
+    \end{tabular}
+    \caption{各手法の結果}
+    \label{tab:my_label}
+\end{table}
+\footnotetext[1]{iterationが50回のプログラムを5回実行して平均をとった。}
+\footnotetext[2]{perfで計測した。全レベルでのキャッシュ参照回数に占めるキャッシュミス回数の割合}
+
+\end{document}
