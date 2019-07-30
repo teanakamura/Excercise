@@ -1,0 +1,21 @@
+# ignore any files or directories
+**
+
+# except for .ignore file
+!.gitignore
+
+# except for any sub directories
+!*/
+!*/*/
+!*/*/*/
+!*/*/*/*/
+
+# ignore any hidden directories
+.*/
+*/.*/
+*/*/.*/
+*/*/*/.*/
+
+# do not ignore any ipynb files in available directories
+!**.ipynb
+!**.md
